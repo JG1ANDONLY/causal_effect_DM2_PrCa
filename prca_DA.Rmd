@@ -1,0 +1,419 @@
+---
+title: "Prostate Cancer Data Analysis"
+author: Zhongyi (James) Guo
+output: pdf_document
+date: '2022-06-28'
+---
+
+1. Data Cleaning
+
+```{r}
+# data source: https://www.ebi.ac.uk/gwas/efotraits/MONDO_0008315 downloaded on 08/30/2022
+prca <- read.csv("prca.csv")
+head(prca)
+```
+
+2. Data Cleaning
+
+```{r}
+# Rename column names to lowercase
+library(dplyr)
+prca_clean <- rename_with(prca, tolower)
+
+# rename columns
+colnames(prca_clean) <- c("SNP&riskallele", "p_value", "p_value_annotation", "raf", "or", "beta", "ci", "mapped_gene", "reported_trait", "traits", "bgtraits", "study_accession", "location")
+
+# delete not useful columns
+prca_clean <- subset(prca_clean, select = -c(p_value_annotation, bgtraits))
+
+head(prca_clean)
+```
+
+```{r}
+# Split SNP & Risk Alleles
+library(tibble)
+prca_clean <- prca_clean %>%
+  add_column(risk_allele = NA, .after="SNP&riskallele")
+
+for (i in 1:nrow(prca)) {
+  SNPandEffectAllele <- prca_clean[i, "SNP&riskallele"]
+  locator_pos <- which(strsplit(SNPandEffectAllele, "")[[1]] == "-")
+  SNP <- substr(SNPandEffectAllele, 1, locator_pos-1)
+  risk_allele <- substr(SNPandEffectAllele, locator_pos+4, locator_pos+4)
+  prca_clean[i, "SNP&riskallele"] <- SNP
+  prca_clean[i, "risk_allele"] <- risk_allele
+}
+
+colnames(prca_clean)[1] <- "SNP"
+```
+
+```{r}
+# Remove undefined risk alleles
+prca_clean <- prca_clean[!(prca_clean$risk_allele == "?"), ]
+
+head(prca_clean, 10)
+```
+```{r}
+# convert character p_values to doubles
+
+# check if there are NA values in p_value column
+if (sum(is.na(prca_clean$p_value)) == 1) {
+  print("There are NA values in the p_value column")
+}
+
+for (i in 1:nrow(prca_clean)){
+  temp <- prca_clean[i, "p_value"]
+  x_pos <- unlist(gregexpr("x", temp))
+  minus_pos <- unlist(gregexpr("-", temp))
+  whole_number <- substr(temp, 1, x_pos - 2)
+  neg_power <- substr(temp, minus_pos+1, nchar(temp))
+  temp_double <- as.double(whole_number) * 10 ^ (-as.double(neg_power))
+  prca_clean[i, "p_value"] <- temp_double
+}
+
+head(prca_clean)
+```
+
+```{r}
+# Replace all "'-" with NA in prca
+prca_clean[prca_clean == "'-"] = NA
+
+# Compute values of columns "or" and "beta"
+# formula: ln(or) = beta
+beta_not_NA_index <- which(!is.na(prca_clean["beta"]))
+for (i in beta_not_NA_index) {
+  raw_beta_value <- prca_clean[i, "beta"]
+  locator_pos <- which(strsplit(raw_beta_value, "")[[1]] == " ")[1]
+  beta_value <- as.double(substr(raw_beta_value, 1, locator_pos-1))
+  prca_clean[i, "beta"] <- beta_value
+  prca_clean[i, "or"] <- exp(beta_value)
+}
+
+or_not_NA_index <- which(!is.na(prca_clean["or"]))
+for (i in or_not_NA_index) {
+  or_value <- as.double(prca_clean[i, "or"])
+  prca_clean[i, "beta"] <- log(or_value)
+}
+
+# SE calculation (I assume default alpha = 0.05)
+# Because we need both beta and lower CI to calculate SE, so they cannot be NA or
+# non-integer type
+# formula: SE = (beta - lower CI)/1.96
+
+# Remove null beta values
+prca_clean <- prca_clean[!is.na(prca_clean$beta), ]
+
+# Remove null CI values or non-integer values
+prca_clean <- prca_clean[!is.na(prca_clean$ci), ]
+prca_clean <- prca_clean[!(prca_clean$ci == "NR" | prca_clean$ci == "[NR]"), ]
+
+head(prca_clean)
+
+```
+
+```{r}
+# calculate SE
+# SE can be NA because of "-" and "-" are different
+rownames(prca_clean) <- 1:nrow(prca_clean)
+prca_clean <- prca_clean %>%
+  add_column(se = NA, .after="beta")
+for (i in 1:nrow(prca_clean)) {
+  CI <- prca_clean[i, "ci"]
+  locator_pos <- unlist(gregexpr("-", CI))[1]
+  if (locator_pos == -1) {
+    locator_pos <- unlist(gregexpr("‐", CI))[1]
+  }
+  lower <- as.double(substr(CI, 2, locator_pos - 1))
+  SE <- (as.double(prca_clean[i, "beta"]) - lower)/1.96
+  prca_clean[i, "se"] <- SE
+}
+
+head(prca_clean)
+```
+
+```{r}
+# Reset Index First
+rownames(prca_clean) <- 1:nrow(prca_clean) 
+
+# Remove non-prostate cancer
+
+## get unique value of prca_clean$reported_trait
+print(unique(prca_clean$reported_trait))
+# ??? TO update!!
+# for (i in 1:nrow(prca)) {
+#   if (grepl("prostate cancer", prca[i, "reported.trait"], ignore.case = TRUE)){
+#     row_num_to_keep <- append(row_num_to_keep, i)
+#   }
+# }
+
+# prca <- prca[row_num_to_keep, ]
+# 
+# # Reset index
+# rownames(prca) <- 1:nrow(prca)
+# 
+# ## Remove miscellaneous
+# # For father
+# prca <- prca[-c(18,19), ]
+# # Other cancers
+# prca <- prca[-c(976:993), ] # numbers are correct
+# 
+# rownames(prca) <- 1:nrow(prca)
+```
+
+```{r}
+# remove p_value that's bigger than 5e-8
+prca_clean <- subset(prca_clean, p_value <= 5e-08)
+rownames(prca_clean) <- 1:nrow(prca_clean) 
+```
+
+3. Data Save
+
+```{r}
+write.csv(prca_clean, file = "/Users/guozhongyi/Desktop/PrCa_clean.csv", row.names = FALSE)
+prca_necessary <- subset(prca_clean, select = c(SNP, beta, p_value, se, risk_allele))
+write.csv(prca_necessary, file = "/Users/guozhongyi/Desktop/PrCa_necessary.csv", row.names = TRUE)
+```
+
+4. MR
+
+```{r, echo = FALSE}
+# install.packages("remotes")
+# remotes::install_github("MRCIEU/TwoSampleMR")
+library(TwoSampleMR)
+```
+
+```{r, echo=FALSE}
+prca_clean <- read.csv("/Users/guozhongyi/Desktop/PrCa_clean.csv")
+ao <- available_outcomes()
+# prca_dat <- read_exposure_data(
+#  filename = 'PrCa_necessary.csv',
+#  sep = ',',
+#  snp_col = 'SNP',
+#  beta_col = 'beta',
+#  se_col = 'se',
+#  effect_allele_col = 'risk_allele',
+#  phenotype_col = '',
+#  units_col = '',
+#  other_allele_col = '',
+#  eaf_col = '',
+#  samplesize_col = '',
+#  ncase_col = '',
+#  ncontrol_col = '',
+#  gene_col = '',
+#  pval_col = 'p_value'
+# )
+# outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ieu-b-2'), proxies = 1, rsq = 0.8, align_alleles = 1, palindromes = 1, maf_threshold = 0.3)
+# dat <- harmonise_data(exposure_dat, outcome_dat, action = 2)
+# mr(dat)
+```
+
+
+```{r}
+# for filter out 
+library(dplyr)
+library(stringr)
+# for easy string detect
+ao$trait <- tolower(ao$trait)
+```
+
+```{r}
+prostate_cancer <- filter(ao, str_detect(trait, "prostate cancer"))
+prostate_cancer
+```
+
+```{r}
+prostate_cancer_clean <- subset(prostate_cancer, id != 'ukb-a-204' & id != 'ukb-b-7773' & id != 'ukb-b-16522')
+prostate_cancer_clean
+```
+
+
+```{r}
+# alzheimer
+alzheimer_filtered <- filter(ao, str_detect(trait, "alzheimer"))
+head(alzheimer_filtered)
+```
+
+```{r}
+# prca as exposure
+
+# for (x in prostate_cancer_clean$id) {
+#   exposure_dat <- extract_instruments(outcome = x)
+#   print(x)
+#   for (i in alzheimer_filtered$id) {
+#     tryCatch({
+#       outcome_dat <- extract_outcome_data(exposure_dat$SNP, c(i), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+#       dat_new <- harmonise_data(exposure_dat, outcome_dat)
+#       mr_dat <- mr(dat_new)
+#       print(i)
+#       print(mr_dat$nsnp)
+#       print(mr_dat$pval)
+#     }, error = function(e){print("\n")})
+#   }
+# }
+for (i in prostate_cancer_clean$id) {
+  exposure_dat <- extract_instruments(outcome = i)
+  outcome_dat <- extract_outcome_data(exposure_dat$SNP, c("finn-b-AD_LO_EXMORE"), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+  dat_new <- harmonise_data(exposure_dat, outcome_dat)
+  mr_dat <- mr(dat_new)
+  print(i)
+  print(mr_dat$nsnp)
+  print(mr_dat$pval)
+}
+# prca as outcome
+```
+
+
+
+```{r}
+diabetes_filtered <- filter(ao, str_detect(trait, "diabete"))
+diabetes_filtered
+```
+
+
+```{r}
+# exp_id <- c()
+# for (i in ao$id) {
+#   tryCatch({
+#     exposure_dat <- extract_instruments(outcome = i)
+#     outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ieu-b-85'), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+#     dat_new <- harmonise_data(exposure_dat, outcome_dat)
+#     mr_dat <- mr(dat_new)
+#     if (min(mr_dat$pval <= 0.05) && mr_dat$nsnp[1] > 10) {
+#       exp_id <- append(exp_id, i)
+#     }
+#   }, error = function(e){print("\n")})
+# }
+for (i in diabetes_filtered$id) {
+  tryCatch({
+    exposure_dat <- extract_instruments(outcome = i)
+    outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ieu-b-85'), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+    dat_new <- harmonise_data(exposure_dat, outcome_dat)
+    mr_dat <- mr(dat_new)
+    print(i)
+    print(mr_dat$nsnp)
+    print(mr_dat$pval)
+  }, error = function(e){print("\n")})
+}
+
+exposure_dat <- extract_instruments(outcome = "finn-b-E4_DM1NASCOMP")
+outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ieu-b-85'), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+dat_new <- harmonise_data(exposure_dat, outcome_dat)
+mr_dat <- mr(dat_new)
+mr_dat
+```
+
+
+
+
+```{r}
+
+exposure_dat <- extract_instruments(outcome = 'ukb-e-2966_AFR')
+
+outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ieu-b-85'), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold = 0.3)
+
+# ao_new <- available_outcomes(acXcess_token = ieugwasr::check_access_token())
+dat_new <- harmonise_data(exposure_dat, outcome_dat)
+mr(dat_new)
+```
+
+
+
+```{r}
+exposure_dat <- extract_instruments(outcome = 'ieu-b-85')
+
+outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('ukb-e-2966_AFR'), proxies = 1, rsq = 0.8, align_alleles = 1, palindromes = 1, maf_threshold = 0.3)
+
+
+dat_new_new <- harmonise_data(exposure_dat, outcome_dat)
+mr(dat_new_new)
+```
+
+
+
+
+```{r}
+# alzheimer as exposure
+for (x in alzheimer_filtered$id) {
+  print(x)
+  exposure_dat <- extract_instruments(outcome = x)
+  for (i in prostate_cancer_clean$id) {
+    tryCatch({
+      outcome_dat <- extract_outcome_data(exposure_dat$SNP, c(i), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+      dat_new <- harmonise_data(exposure_dat, outcome_dat)
+      mr_dat <- mr(dat_new)
+      print(i)
+      print(mr_dat$nsnp)
+      print(mr_dat$pval)
+    }, error = function(e){print("\n")})
+  }
+}
+```
+
+
+
+
+```{r}
+# diabetes as outcome
+for (x in prostate_cancer_clean$id) {
+  exposure_dat <- extract_instruments(outcome = x)
+  print(x)
+  for (i in diabetes_filtered$id) {
+    tryCatch({
+      outcome_dat <- extract_outcome_data(exposure_dat$SNP, c(i), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+      dat_new <- harmonise_data(exposure_dat, outcome_dat)
+      mr_dat <- mr(dat_new)
+      if (mr_dat$nsnp > 10 & min(mr_dat$pval) < 0.05) {
+        print(i)
+        print(mr_dat$nsnp)
+        print(mr_dat$pval)
+      }
+    }, error = function(e){print("\n")})
+  }
+}
+```
+
+
+```{r}
+exposure_dat <- extract_instruments(outcome = "ieu-b-85")
+outcome_dat <- extract_outcome_data(exposure_dat$SNP, c("ukb-a-306"), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+dat_new <- harmonise_data(exposure_dat, outcome_dat)
+mr_dat <- mr(dat_new)
+mr_dat
+```
+
+
+
+```{r}
+# diabetes as exposure
+for (diabete_id in diabetes_filtered$id) {
+  exposure_dat <- extract_instruments(outcome = diabete_id)
+  print(diabete_id)
+  for (i in prostate_cancer_clean$id) {
+    tryCatch({
+      outcome_dat <- extract_outcome_data(exposure_dat$SNP, c(i), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+      dat_new <- harmonise_data(exposure_dat, outcome_dat)
+      mr_dat <- mr(dat_new)
+      if (mr_dat$nsnp > 10 & min(mr_dat$pval) < 0.05) {
+        print(i)
+        print(mr_dat$nsnp)
+        print(mr_dat$pval)
+      }
+    }, error = function(e){print("\n")})
+  }
+}
+```
+
+```{r}
+# final result
+exposure_dat <- extract_instruments(outcomes = 'ebi-a-GCST010118')
+outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('bbj-a-148'), proxies = 1, rsq = 0.8, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+dat_new <- harmonise_data(exposure_dat, outcome_dat)
+mr_dat <- mr(dat_new)
+mr_dat
+```
+
+```{r}
+exposure_dat <- extract_instruments(outcomes = 'ebi-a-GCST010118')
+# outcome_dat <- extract_outcome_data(exposure_dat$SNP, c('bbj-a-148'), proxies = 1, rsq = 0.9, align_alleles = 1, palindromes = 1, maf_threshold =0.3)
+# dat_new <- harmonise_data(exposure_dat, outcome_dat)
+```
