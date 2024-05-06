@@ -1,6 +1,6 @@
 # Causal effect of type II diabetes on prostate cancer in the East Asian population: A two-sample Mendelian randomization study
 
-First Author: Zhongyi Guo (zg268@cornell.edu)
+First Author: Zhongyi Guo (guozy@stanford.edu; zg268@cornell.edu)
 
 Shortened title: Causal effect of type II diabetes on prostate cancer
 
